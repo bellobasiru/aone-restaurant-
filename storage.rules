@@ -1,0 +1,23 @@
+rules_version = '2';
+
+// Paste this into Firebase Console > Storage > Rules.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAdmin() {
+      return request.auth != null &&
+        firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid));
+    }
+
+    // Anyone can view food/logo images (they're shown on the public menu).
+    // Only admins can upload, replace, or delete images, and uploads are
+    // capped at 5MB and must be image files.
+    match /{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin() &&
+        request.resource.size < 5 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+    }
+  }
+}
