@@ -1,0 +1,73 @@
+rules_version = '2';
+
+// Paste this into Firebase Console > Firestore Database > Rules.
+// See README.md "Configure Firestore security rules" for step-by-step help.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // An "admin" is a signed-in user whose UID has a document in /admins.
+    // This document can only be created from the Firebase console, never
+    // from the app itself, so a compromised frontend cannot self-promote.
+    function isAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // PRODUCTS: anyone can view the menu. Only admins can change it.
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // CATEGORIES: public read, admin write.
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // SETTINGS: public read (customers need the phone number, fees, hours),
+    // admin write only.
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ORDERS: any visitor (including guests) can CREATE an order, since
+    // checkout must work without an account. Nobody but an admin can read
+    // the full order list, edit, or delete orders — this stops customers
+    // from browsing each other's orders or tampering with order status.
+    match /orders/{orderId} {
+      allow create: if request.resource.data.customerName is string &&
+                      request.resource.data.phone is string &&
+                      request.resource.data.total is number;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // REVIEWS: public read, signed-in create, admin moderate.
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    // ADMINS: nobody writes this from the app. You manage it by hand in
+    // the Firebase console (see README). Admins may read the list to power
+    // the "Admin Users" page; nobody else can read it.
+    match /admins/{uid} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // CUSTOMERS (optional accounts): a customer can read/write only their
+    // own profile; admins can read all of them.
+    match /customers/{uid} {
+      allow read, write: if isSignedIn() && request.auth.uid == uid;
+      allow read: if isAdmin();
+    }
+  }
+}
