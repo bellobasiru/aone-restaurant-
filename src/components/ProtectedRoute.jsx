@@ -1,16 +1,41 @@
 import React, { useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 import { Navigate } from "react-router-dom";
-import { auth } from "../firebase/config";
+import { auth, db } from "../firebase/config";
 
 export default function ProtectedRoute({ children }) {
-  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setIsAdmin(false);
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const adminRef = doc(db, "admins", user.uid);
+        const adminSnapshot = await getDoc(adminRef);
+
+        if (adminSnapshot.exists()) {
+          const adminData = adminSnapshot.data();
+
+          setIsAdmin(
+            adminData.role === "admin" &&
+            adminData.email?.toLowerCase() === user.email?.toLowerCase()
+          );
+        } else {
+          setIsAdmin(false);
+        }
+      } catch (error) {
+        console.error("Admin verification failed:", error);
+        setIsAdmin(false);
+      } finally {
+        setLoading(false);
+      }
     });
 
     return () => unsubscribe();
@@ -26,13 +51,17 @@ export default function ProtectedRoute({ children }) {
           justifyContent: "center",
         }}
       >
-        Checking login...
+        Checking admin access...
       </div>
     );
   }
 
-  if (!user) {
+  if (!auth.currentUser) {
     return <Navigate to="/admin/login" replace />;
+  }
+
+  if (!isAdmin) {
+    return <Navigate to="/" replace />;
   }
 
   return children;
