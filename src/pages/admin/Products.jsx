@@ -6,8 +6,8 @@ import {
   updateProductPrice,
   deleteProduct,
 } from "../../firebase/products";
-import { subscribeToCategories } from "../../firebase/categories";
-import { uploadImage, deleteImageByUrl } from "../../firebase/storage";
+import { subscribeToCategories, createCategory } from "../../firebase/categories";
+import { uploadToCloudinary } from "../../utils/cloudinary";
 import { useSettings } from "../../context/SettingsContext";
 import { formatNaira } from "../../utils/format";
 
@@ -31,6 +31,10 @@ export default function Products() {
   const [error, setError] = useState("");
   const [priceEdits, setPriceEdits] = useState({});
   const [savedPriceId, setSavedPriceId] = useState(null);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkResult, setBulkResult] = useState("");
+  const [showBulk, setShowBulk] = useState(false);
   const { settings } = useSettings();
 
   useEffect(() => {
@@ -75,10 +79,7 @@ export default function Products() {
     try {
       let imageUrl = form.imageUrl;
       if (imageFile) {
-        imageUrl = await uploadImage(imageFile, "products");
-        if (editingId && form.imageUrl) {
-          await deleteImageByUrl(form.imageUrl);
-        }
+        imageUrl = await uploadToCloudinary(imageFile);
       }
 
       const payload = { ...form, imageUrl };
@@ -101,7 +102,6 @@ export default function Products() {
     if (!window.confirm(`Delete "${product.name}"? This cannot be undone.`)) return;
     try {
       await deleteProduct(product.id);
-      if (product.imageUrl) await deleteImageByUrl(product.imageUrl);
     } catch (err) {
       alert("Couldn't delete the product. Please try again.");
     }
@@ -119,9 +119,118 @@ export default function Products() {
     }
   }
 
+  async function handleBulkAdd() {
+    const lines = bulkText
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) {
+      setBulkResult("Paste at least one line first.");
+      return;
+    }
+
+    setBulkSaving(true);
+    setBulkResult("");
+
+    // Track categories we already know about (existing + newly created this run)
+    const knownCategoryNames = new Set(categories.map((c) => c.name.toLowerCase()));
+
+    let created = 0;
+    let failed = 0;
+    const failedLines = [];
+
+    for (const line of lines) {
+      const parts = line.split(",").map((p) => p.trim());
+      const [name, priceRaw, category, ...descParts] = parts;
+      const description = descParts.join(",").trim();
+      const price = Number(priceRaw);
+
+      if (!name || !priceRaw || Number.isNaN(price) || !category) {
+        failed++;
+        failedLines.push(line);
+        continue;
+      }
+
+      try {
+        // Auto-create the category if it doesn't exist yet
+        if (!knownCategoryNames.has(category.toLowerCase())) {
+          await createCategory(category);
+          knownCategoryNames.add(category.toLowerCase());
+        }
+
+        await createProduct({
+          name,
+          price,
+          category,
+          description: description || "",
+          imageUrl: "",
+          available: true,
+          featured: false,
+        });
+        created++;
+      } catch (err) {
+        console.error(err);
+        failed++;
+        failedLines.push(line);
+      }
+    }
+
+    setBulkSaving(false);
+    setBulkResult(
+      failed === 0
+        ? `Added ${created} item${created === 1 ? "" : "s"} successfully!`
+        : `Added ${created} item${created === 1 ? "" : "s"}. ${failed} line(s) had a problem:\n${failedLines.join("\n")}`
+    );
+    if (failed === 0) setBulkText("");
+  }
+
   return (
     <div>
       <h1 className="font-display text-3xl mb-8">Products</h1>
+
+      {/* Bulk add */}
+      <div className="bg-white border border-ink/10 rounded-2xl p-6 mb-10">
+        <button
+          type="button"
+          onClick={() => setShowBulk((s) => !s)}
+          className="font-display text-lg flex items-center gap-2"
+        >
+          {showBulk ? "▾" : "▸"} Bulk add menu items
+        </button>
+        {showBulk && (
+          <div className="mt-4 space-y-3">
+            <p className="text-sm text-ink/60">
+              Paste one item per line, in this format:
+              <br />
+              <code className="text-xs bg-ink/5 px-1.5 py-0.5 rounded">
+                Food name, Price, Category, Description
+              </code>
+              <br />
+              Categories that don't exist yet will be created automatically. You can add images
+              later by editing each item.
+            </p>
+            <textarea
+              rows={8}
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              placeholder={"Fried Rice, 1500, Rice Dishes, Freshly cooked fried rice\nJollof Rice, 1500, Jollof Dishes, Smoky jollof rice served hot"}
+              className="w-full border border-ink/15 rounded-xl px-4 py-2.5 text-sm font-mono focus:border-jollof outline-none"
+            />
+            {bulkResult && (
+              <p className="text-sm whitespace-pre-line text-ink/70">{bulkResult}</p>
+            )}
+            <button
+              type="button"
+              onClick={handleBulkAdd}
+              disabled={bulkSaving}
+              className="bg-jollof text-cream px-6 py-2.5 rounded-full text-sm hover:bg-jollof-dark disabled:opacity-60"
+            >
+              {bulkSaving ? "Adding items…" : "Add all items"}
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Add / Edit form */}
       <form onSubmit={handleSubmit} className="bg-white border border-ink/10 rounded-2xl p-6 mb-10 space-y-4">
@@ -178,6 +287,16 @@ export default function Products() {
           </div>
           <div>
             <label className="block text-sm font-medium mb-1.5">Food image</label>
+            <input
+              type="url"
+              placeholder="Paste an image URL (e.g. from Imgur, Google Images)"
+              value={form.imageUrl}
+              onChange={(e) => setForm((f) => ({ ...f, imageUrl: e.target.value }))}
+              className="w-full border border-ink/15 rounded-xl px-4 py-2.5 mb-2 text-sm focus:border-jollof outline-none"
+            />
+            <p className="text-xs text-ink/40 mb-2">
+              Or pick a photo from your phone to upload directly:
+            </p>
             <input
               type="file"
               accept="image/*"
